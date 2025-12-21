@@ -190,9 +190,10 @@ jobs:
 
           for app in $(echo "$APPS" | jq -r '.app[].name'); do
             IMAGE_URL="${{ inputs.registry }}/${{ inputs.image_prefix }}/${app}:${SHA_SHORT}"
-            IMAGES=$(echo "$IMAGES" | jq --arg name "$app" --arg url "$IMAGE_URL" '. + {($name): $url}')
+            IMAGES=$(echo "$IMAGES" | jq -c --arg name "$app" --arg url "$IMAGE_URL" '. + {($name): $url}')
           done
 
-          echo "images=$IMAGES" >> $GITHUB_OUTPUT
+          # Use compact JSON for GITHUB_OUTPUT
+          echo "images=$(echo "$IMAGES" | jq -c .)" >> $GITHUB_OUTPUT
           echo "Built images:"
           echo "$IMAGES" | jq .
