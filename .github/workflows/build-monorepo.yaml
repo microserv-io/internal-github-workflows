@@ -27,6 +27,21 @@ on:
       GCP_SERVICE_ACCOUNT:
         description: 'GCP Service Account email'
         required: true
+      CONTENTFUL_SPACE_ID:
+        description: 'Contentful Space ID (optional)'
+        required: false
+      CONTENTFUL_ACCESS_TOKEN:
+        description: 'Contentful Access Token (optional)'
+        required: false
+      NEXT_PUBLIC_GOOGLE_MAPS_KEY:
+        description: 'Google Maps API Key (optional)'
+        required: false
+      NEXT_PUBLIC_GA_ID:
+        description: 'Google Analytics ID (optional)'
+        required: false
+      GOOGLE_PLACE_ID:
+        description: 'Google Place ID (optional)'
+        required: false
     outputs:
       built_images:
         description: 'JSON object of built images {app_name: image_url}'
@@ -152,6 +167,34 @@ jobs:
           fi
           echo "path=${{ matrix.app.path }}/${DOCKERFILE}" >> $GITHUB_OUTPUT
 
+      - name: Prepare build args
+        id: build_args
+        run: |
+          # Start with app-specific build args
+          ARGS="${{ matrix.app.build_args }}"
+
+          # Add secrets as build args if provided
+          if [ -n "${{ secrets.CONTENTFUL_SPACE_ID }}" ]; then
+            ARGS="${ARGS}${ARGS:+$'\n'}CONTENTFUL_SPACE_ID=${{ secrets.CONTENTFUL_SPACE_ID }}"
+          fi
+          if [ -n "${{ secrets.CONTENTFUL_ACCESS_TOKEN }}" ]; then
+            ARGS="${ARGS}${ARGS:+$'\n'}CONTENTFUL_ACCESS_TOKEN=${{ secrets.CONTENTFUL_ACCESS_TOKEN }}"
+          fi
+          if [ -n "${{ secrets.NEXT_PUBLIC_GOOGLE_MAPS_KEY }}" ]; then
+            ARGS="${ARGS}${ARGS:+$'\n'}NEXT_PUBLIC_GOOGLE_MAPS_KEY=${{ secrets.NEXT_PUBLIC_GOOGLE_MAPS_KEY }}"
+          fi
+          if [ -n "${{ secrets.NEXT_PUBLIC_GA_ID }}" ]; then
+            ARGS="${ARGS}${ARGS:+$'\n'}NEXT_PUBLIC_GA_ID=${{ secrets.NEXT_PUBLIC_GA_ID }}"
+          fi
+          if [ -n "${{ secrets.GOOGLE_PLACE_ID }}" ]; then
+            ARGS="${ARGS}${ARGS:+$'\n'}GOOGLE_PLACE_ID=${{ secrets.GOOGLE_PLACE_ID }}"
+          fi
+
+          # Output build args (multiline safe)
+          echo "args<<EOF" >> $GITHUB_OUTPUT
+          echo "$ARGS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -161,7 +204,7 @@ jobs:
           tags: |
             ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.sha_short }}
             ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || steps.meta.outputs.branch_tag }}
-          build-args: ${{ matrix.app.build_args }}
+          build-args: ${{ steps.build_args.outputs.args }}
           cache-from: type=gha,scope=${{ matrix.app.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.app.name }}
           labels: |
