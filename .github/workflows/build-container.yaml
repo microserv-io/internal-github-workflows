@@ -1,0 +1,106 @@
+name: Build Container Image
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: 'Name of the app to build (e.g., web, admin, api)'
+        required: true
+        type: string
+      app_path:
+        description: 'Path to the app directory (e.g., apps/web)'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to Dockerfile relative to app_path'
+        required: false
+        type: string
+        default: 'Dockerfile'
+      registry:
+        description: 'Container registry URL'
+        required: true
+        type: string
+      image_name:
+        description: 'Image name (without registry prefix)'
+        required: true
+        type: string
+      build_args:
+        description: 'Docker build arguments (multiline KEY=VALUE)'
+        required: false
+        type: string
+        default: ''
+      platforms:
+        description: 'Target platforms for multi-arch builds'
+        required: false
+        type: string
+        default: 'linux/amd64'
+    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER:
+        description: 'GCP Workload Identity Provider'
+        required: true
+      GCP_SERVICE_ACCOUNT:
+        description: 'GCP Service Account email'
+        required: true
+    outputs:
+      image_tag:
+        description: 'The built image tag (SHA)'
+        value: ${{ jobs.build.outputs.image_tag }}
+      image_url:
+        description: 'Full image URL with tag'
+        value: ${{ jobs.build.outputs.image_url }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.sha_short }}
+      image_url: ${{ steps.meta.outputs.image_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
+          echo "sha_short=${SHA_SHORT}" >> $GITHUB_OUTPUT
+          echo "image_url=${{ inputs.registry }}/${{ inputs.image_name }}:${SHA_SHORT}" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.app_path }}
+          file: ${{ inputs.app_path }}/${{ inputs.dockerfile }}
+          push: true
+          platforms: ${{ inputs.platforms }}
+          tags: |
+            ${{ inputs.registry }}/${{ inputs.image_name }}:${{ steps.meta.outputs.sha_short }}
+            ${{ inputs.registry }}/${{ inputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+          build-args: ${{ inputs.build_args }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}

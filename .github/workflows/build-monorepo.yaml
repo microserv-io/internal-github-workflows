@@ -1,0 +1,195 @@
+name: Build Monorepo Apps
+
+on:
+  workflow_call:
+    inputs:
+      apps_config:
+        description: 'JSON array of app configurations [{name, path, dockerfile?, build_args?}]'
+        required: true
+        type: string
+      registry:
+        description: 'Container registry URL'
+        required: true
+        type: string
+      image_prefix:
+        description: 'Image name prefix (e.g., herrewijnen)'
+        required: true
+        type: string
+      build_all:
+        description: 'Force build all apps regardless of changes'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER:
+        description: 'GCP Workload Identity Provider'
+        required: true
+      GCP_SERVICE_ACCOUNT:
+        description: 'GCP Service Account email'
+        required: true
+    outputs:
+      built_images:
+        description: 'JSON object of built images {app_name: image_url}'
+        value: ${{ jobs.summary.outputs.built_images }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.changes.outputs.matrix }}
+      has_changes: ${{ steps.changes.outputs.has_changes }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed apps
+        id: changes
+        run: |
+          APPS_CONFIG='${{ inputs.apps_config }}'
+
+          if [ "${{ inputs.build_all }}" == "true" ]; then
+            echo "Building all apps (forced)"
+            MATRIX="{\"app\":$APPS_CONFIG}"
+            echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Get changed files
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            BASE_SHA=${{ github.event.pull_request.base.sha }}
+            HEAD_SHA=${{ github.event.pull_request.head.sha }}
+            CHANGED_FILES=$(git diff --name-only $BASE_SHA...$HEAD_SHA)
+          else
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Check each app for changes
+          CHANGED_APPS="[]"
+
+          for app in $(echo "$APPS_CONFIG" | jq -r '.[] | @base64'); do
+            APP_NAME=$(echo "$app" | base64 -d | jq -r '.name')
+            APP_PATH=$(echo "$app" | base64 -d | jq -r '.path')
+
+            if echo "$CHANGED_FILES" | grep -q "^${APP_PATH}/"; then
+              CHANGED_APPS=$(echo "$CHANGED_APPS" | jq --arg name "$APP_NAME" '. + [$name]')
+              echo "App changed: $APP_NAME"
+            fi
+          done
+
+          # Check for root changes
+          if echo "$CHANGED_FILES" | grep -qE "^(package\.json|pnpm-lock\.yaml|bun\.lockb|requirements\.txt|go\.mod|go\.sum|\.dockerignore|charts/)"; then
+            echo "Root dependency change detected, building all apps"
+            CHANGED_APPS=$(echo "$APPS_CONFIG" | jq '[.[].name]')
+          fi
+
+          # Create matrix
+          FILTERED=$(echo "$APPS_CONFIG" | jq --argjson changed "$CHANGED_APPS" '[.[] | select(.name as $n | $changed | index($n))]')
+          HAS_CHANGES=$([ "$(echo "$FILTERED" | jq 'length')" -gt 0 ] && echo "true" || echo "false")
+
+          echo "matrix={\"app\":$FILTERED}" >> $GITHUB_OUTPUT
+          echo "has_changes=$HAS_CHANGES" >> $GITHUB_OUTPUT
+
+          echo "Matrix: {\"app\":$FILTERED}"
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Login to Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
+          IMAGE_NAME="${{ inputs.image_prefix }}/${{ matrix.app.name }}"
+          echo "sha_short=${SHA_SHORT}" >> $GITHUB_OUTPUT
+          echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "image_url=${{ inputs.registry }}/${IMAGE_NAME}:${SHA_SHORT}" >> $GITHUB_OUTPUT
+
+      - name: Determine Dockerfile
+        id: dockerfile
+        run: |
+          DOCKERFILE="${{ matrix.app.dockerfile }}"
+          if [ -z "$DOCKERFILE" ]; then
+            DOCKERFILE="Dockerfile"
+          fi
+          echo "path=${{ matrix.app.path }}/${DOCKERFILE}" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.app.path }}
+          file: ${{ steps.dockerfile.outputs.path }}
+          push: true
+          tags: |
+            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.sha_short }}
+            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+          build-args: ${{ matrix.app.build_args }}
+          cache-from: type=gha,scope=${{ matrix.app.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app.name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            app.name=${{ matrix.app.name }}
+
+      - name: Output image info
+        run: |
+          echo "Built image: ${{ steps.meta.outputs.image_url }}"
+
+  summary:
+    needs: [detect, build]
+    if: always() && needs.detect.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      built_images: ${{ steps.collect.outputs.images }}
+
+    steps:
+      - name: Collect built images
+        id: collect
+        run: |
+          SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
+          APPS='${{ needs.detect.outputs.matrix }}'
+          IMAGES="{}"
+
+          for app in $(echo "$APPS" | jq -r '.app[].name'); do
+            IMAGE_URL="${{ inputs.registry }}/${{ inputs.image_prefix }}/${app}:${SHA_SHORT}"
+            IMAGES=$(echo "$IMAGES" | jq --arg name "$app" --arg url "$IMAGE_URL" '. + {($name): $url}')
+          done
+
+          echo "images=$IMAGES" >> $GITHUB_OUTPUT
+          echo "Built images:"
+          echo "$IMAGES" | jq .

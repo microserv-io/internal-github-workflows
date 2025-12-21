@@ -1,0 +1,86 @@
+name: Detect Monorepo Changes
+
+on:
+  workflow_call:
+    inputs:
+      apps_config:
+        description: 'JSON array of app configurations [{name, path}]'
+        required: true
+        type: string
+      base_ref:
+        description: 'Base ref for comparison (default: main)'
+        required: false
+        type: string
+        default: 'main'
+    outputs:
+      changed_apps:
+        description: 'JSON array of changed app names'
+        value: ${{ jobs.detect.outputs.changed_apps }}
+      has_changes:
+        description: 'Boolean indicating if any apps changed'
+        value: ${{ jobs.detect.outputs.has_changes }}
+      matrix:
+        description: 'Matrix-ready JSON for changed apps'
+        value: ${{ jobs.detect.outputs.matrix }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      changed_apps: ${{ steps.changes.outputs.changed_apps }}
+      has_changes: ${{ steps.changes.outputs.has_changes }}
+      matrix: ${{ steps.changes.outputs.matrix }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed apps
+        id: changes
+        run: |
+          # Parse apps config
+          APPS_CONFIG='${{ inputs.apps_config }}'
+
+          # Get changed files
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            CHANGED_FILES=$(git diff --name-only origin/${{ inputs.base_ref }}...HEAD)
+          else
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || git diff --name-only HEAD)
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          # Check each app for changes
+          CHANGED_APPS="[]"
+
+          for app in $(echo "$APPS_CONFIG" | jq -r '.[] | @base64'); do
+            APP_NAME=$(echo "$app" | base64 -d | jq -r '.name')
+            APP_PATH=$(echo "$app" | base64 -d | jq -r '.path')
+
+            # Check if any changed file is in this app's path
+            if echo "$CHANGED_FILES" | grep -q "^${APP_PATH}/"; then
+              CHANGED_APPS=$(echo "$CHANGED_APPS" | jq --arg name "$APP_NAME" '. + [$name]')
+              echo "App changed: $APP_NAME"
+            fi
+          done
+
+          # Also check for shared/root changes that should trigger all builds
+          if echo "$CHANGED_FILES" | grep -qE "^(package\.json|pnpm-lock\.yaml|bun\.lockb|requirements\.txt|go\.mod|go\.sum|Dockerfile\.base)$"; then
+            echo "Root dependency change detected, building all apps"
+            CHANGED_APPS=$(echo "$APPS_CONFIG" | jq '[.[].name]')
+          fi
+
+          # Set outputs
+          HAS_CHANGES=$([ "$(echo "$CHANGED_APPS" | jq 'length')" -gt 0 ] && echo "true" || echo "false")
+          MATRIX=$(echo "$APPS_CONFIG" | jq --argjson changed "$CHANGED_APPS" '[.[] | select(.name as $n | $changed | index($n))]')
+
+          echo "changed_apps=$CHANGED_APPS" >> $GITHUB_OUTPUT
+          echo "has_changes=$HAS_CHANGES" >> $GITHUB_OUTPUT
+          echo "matrix={\"app\":$MATRIX}" >> $GITHUB_OUTPUT
+
+          echo "Summary:"
+          echo "Changed apps: $CHANGED_APPS"
+          echo "Has changes: $HAS_CHANGES"
