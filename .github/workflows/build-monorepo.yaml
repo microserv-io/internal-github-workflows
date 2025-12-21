@@ -136,9 +136,12 @@ jobs:
         run: |
           SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
           IMAGE_NAME="${{ inputs.image_prefix }}/${{ matrix.app.name }}"
+          # Sanitize branch name for Docker tag (replace / with -)
+          BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
           echo "sha_short=${SHA_SHORT}" >> $GITHUB_OUTPUT
           echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
           echo "image_url=${{ inputs.registry }}/${IMAGE_NAME}:${SHA_SHORT}" >> $GITHUB_OUTPUT
+          echo "branch_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
 
       - name: Determine Dockerfile
         id: dockerfile
@@ -157,7 +160,7 @@ jobs:
           push: true
           tags: |
             ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.sha_short }}
-            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
+            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || steps.meta.outputs.branch_tag }}
           build-args: ${{ matrix.app.build_args }}
           cache-from: type=gha,scope=${{ matrix.app.name }}
           cache-to: type=gha,mode=max,scope=${{ matrix.app.name }}
