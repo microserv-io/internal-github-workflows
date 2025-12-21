@@ -57,6 +57,32 @@ Builds a single container image. Useful for simple repos or when you need more c
 
 Detects which apps in a monorepo have changed. Used internally by `build-monorepo.yaml`.
 
+### version-changelog.yaml
+
+Automatic semantic versioning and changelog generation based on conventional commits.
+
+**Version Bumping Rules:**
+- `feat:` → Minor bump (0.X.0)
+- `fix:` → Patch bump (0.0.X)
+- `feat!:` or `BREAKING CHANGE:` → Major bump (X.0.0)
+
+**Inputs:**
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `version_file` | No | `package.json` | File to update (package.json, VERSION, pyproject.toml) |
+| `changelog_file` | No | `CHANGELOG.md` | Changelog file path |
+| `commit_changelog` | No | `true` | Whether to commit the changes |
+| `dry_run` | No | `false` | Only calculate, don't commit |
+
+**Outputs:**
+
+| Output | Description |
+|--------|-------------|
+| `new_version` | The calculated new version |
+| `old_version` | The previous version |
+| `bump_type` | The bump type (major, minor, patch, none) |
+
 ## Usage Examples
 
 ### Monorepo (Multiple Apps)
@@ -107,6 +133,37 @@ jobs:
       app_path: .
       registry: europe-west4-docker.pkg.dev/microserv-shared-347c/microserv
       image_name: myapp/app
+    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+```
+
+### Version and Changelog (Trunk-Based)
+
+```yaml
+# .github/workflows/release.yaml
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  version:
+    uses: microserv-io/internal-github-workflows/.github/workflows/version-changelog.yaml@main
+    with:
+      version_file: package.json
+      changelog_file: CHANGELOG.md
+
+  build:
+    needs: version
+    if: needs.version.outputs.bump_type != 'none'
+    uses: microserv-io/internal-github-workflows/.github/workflows/build-monorepo.yaml@main
+    with:
+      apps_config: |
+        [{"name": "app", "path": "."}]
+      registry: europe-west4-docker.pkg.dev/microserv-shared-347c/microserv
+      image_prefix: myproject
     secrets:
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}

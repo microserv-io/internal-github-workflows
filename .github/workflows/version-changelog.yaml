@@ -1,0 +1,221 @@
+name: Version and Changelog
+
+on:
+  workflow_call:
+    inputs:
+      version_file:
+        description: 'File to update version in (package.json, VERSION, pyproject.toml)'
+        required: false
+        type: string
+        default: 'package.json'
+      changelog_file:
+        description: 'Changelog file path'
+        required: false
+        type: string
+        default: 'CHANGELOG.md'
+      commit_changelog:
+        description: 'Whether to commit the changelog update'
+        required: false
+        type: boolean
+        default: true
+      dry_run:
+        description: 'Only calculate version, do not commit'
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      new_version:
+        description: 'The new calculated version'
+        value: ${{ jobs.version.outputs.new_version }}
+      old_version:
+        description: 'The previous version'
+        value: ${{ jobs.version.outputs.old_version }}
+      bump_type:
+        description: 'The type of version bump (major, minor, patch, none)'
+        value: ${{ jobs.version.outputs.bump_type }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.version.outputs.new_version }}
+      old_version: ${{ steps.version.outputs.old_version }}
+      bump_type: ${{ steps.version.outputs.bump_type }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get current version
+        id: current
+        run: |
+          VERSION_FILE="${{ inputs.version_file }}"
+
+          if [[ "$VERSION_FILE" == "package.json" ]] && [ -f package.json ]; then
+            VERSION=$(jq -r '.version // "0.0.0"' package.json)
+          elif [[ "$VERSION_FILE" == "VERSION" ]] && [ -f VERSION ]; then
+            VERSION=$(cat VERSION | tr -d '\n')
+          elif [[ "$VERSION_FILE" == "pyproject.toml" ]] && [ -f pyproject.toml ]; then
+            VERSION=$(grep -E '^version\s*=' pyproject.toml | sed 's/.*=\s*"\(.*\)"/\1/' | head -1)
+          else
+            VERSION="0.0.0"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $VERSION"
+
+      - name: Analyze commits
+        id: analyze
+        run: |
+          # Get commits since last version bump or all commits
+          LAST_VERSION_COMMIT=$(git log --all --grep="chore(release)" --format="%H" -1 2>/dev/null || echo "")
+
+          if [ -n "$LAST_VERSION_COMMIT" ]; then
+            COMMITS=$(git log $LAST_VERSION_COMMIT..HEAD --format="%s" 2>/dev/null || git log --format="%s")
+          else
+            COMMITS=$(git log --format="%s" -50)
+          fi
+
+          echo "Analyzing commits:"
+          echo "$COMMITS"
+
+          BUMP="none"
+
+          # Check for breaking changes (major bump)
+          if echo "$COMMITS" | grep -qE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE:"; then
+            BUMP="major"
+          # Check for features (minor bump)
+          elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
+            BUMP="minor"
+          # Check for fixes (patch bump)
+          elif echo "$COMMITS" | grep -qE "^fix(\(.+\))?:"; then
+            BUMP="patch"
+          fi
+
+          echo "bump=$BUMP" >> $GITHUB_OUTPUT
+          echo "Bump type: $BUMP"
+
+      - name: Calculate new version
+        id: version
+        run: |
+          CURRENT="${{ steps.current.outputs.version }}"
+          BUMP="${{ steps.analyze.outputs.bump }}"
+
+          # Parse version components
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          case "$BUMP" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+            *)
+              echo "No version bump needed"
+              ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+          echo "old_version=$CURRENT" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "bump_type=$BUMP" >> $GITHUB_OUTPUT
+
+          echo "Version: $CURRENT -> $NEW_VERSION ($BUMP)"
+
+      - name: Update version file
+        if: steps.analyze.outputs.bump != 'none' && inputs.dry_run == false
+        run: |
+          VERSION_FILE="${{ inputs.version_file }}"
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+
+          if [[ "$VERSION_FILE" == "package.json" ]] && [ -f package.json ]; then
+            jq --arg v "$NEW_VERSION" '.version = $v' package.json > package.json.tmp
+            mv package.json.tmp package.json
+          elif [[ "$VERSION_FILE" == "VERSION" ]]; then
+            echo "$NEW_VERSION" > VERSION
+          elif [[ "$VERSION_FILE" == "pyproject.toml" ]] && [ -f pyproject.toml ]; then
+            sed -i "s/^version\s*=.*/version = \"$NEW_VERSION\"/" pyproject.toml
+          fi
+
+          echo "Updated $VERSION_FILE to $NEW_VERSION"
+
+      - name: Generate changelog
+        if: steps.analyze.outputs.bump != 'none' && inputs.dry_run == false
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          CHANGELOG_FILE="${{ inputs.changelog_file }}"
+          DATE=$(date +%Y-%m-%d)
+
+          # Get commits since last release
+          LAST_VERSION_COMMIT=$(git log --all --grep="chore(release)" --format="%H" -1 2>/dev/null || echo "")
+
+          if [ -n "$LAST_VERSION_COMMIT" ]; then
+            COMMITS=$(git log $LAST_VERSION_COMMIT..HEAD --format="%s" 2>/dev/null || git log --format="%s" -50)
+          else
+            COMMITS=$(git log --format="%s" -50)
+          fi
+
+          # Generate changelog entry
+          ENTRY="## [$NEW_VERSION] - $DATE"$'\n\n'
+
+          # Features
+          FEATURES=$(echo "$COMMITS" | grep -E "^feat(\(.+\))?:" | sed 's/^feat(\(.*\)):/- **\1**:/' | sed 's/^feat:/- /' || true)
+          if [ -n "$FEATURES" ]; then
+            ENTRY+="### Features"$'\n'
+            ENTRY+="$FEATURES"$'\n\n'
+          fi
+
+          # Bug Fixes
+          FIXES=$(echo "$COMMITS" | grep -E "^fix(\(.+\))?:" | sed 's/^fix(\(.*\)):/- **\1**:/' | sed 's/^fix:/- /' || true)
+          if [ -n "$FIXES" ]; then
+            ENTRY+="### Bug Fixes"$'\n'
+            ENTRY+="$FIXES"$'\n\n'
+          fi
+
+          # Breaking Changes
+          BREAKING=$(echo "$COMMITS" | grep -E "^[a-z]+(\(.+\))?!:" | sed 's/^[a-z]*(\(.*\))!:/- **\1**:/' | sed 's/^[a-z]*!:/- /' || true)
+          if [ -n "$BREAKING" ]; then
+            ENTRY+="### Breaking Changes"$'\n'
+            ENTRY+="$BREAKING"$'\n\n'
+          fi
+
+          # Update or create changelog
+          if [ -f "$CHANGELOG_FILE" ]; then
+            # Insert after header
+            if grep -q "^# Changelog" "$CHANGELOG_FILE"; then
+              sed -i "/^# Changelog/a\\
+$ENTRY" "$CHANGELOG_FILE"
+            else
+              echo -e "# Changelog\n\n$ENTRY$(cat $CHANGELOG_FILE)" > "$CHANGELOG_FILE"
+            fi
+          else
+            echo -e "# Changelog\n\n$ENTRY" > "$CHANGELOG_FILE"
+          fi
+
+          echo "Updated $CHANGELOG_FILE"
+
+      - name: Commit changes
+        if: steps.analyze.outputs.bump != 'none' && inputs.dry_run == false && inputs.commit_changelog == true
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add ${{ inputs.version_file }} ${{ inputs.changelog_file }}
+          git commit -m "chore(release): $NEW_VERSION" || echo "Nothing to commit"
+          git push
