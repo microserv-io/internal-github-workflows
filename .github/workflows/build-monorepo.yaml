@@ -153,10 +153,13 @@ jobs:
           IMAGE_NAME="${{ inputs.image_prefix }}/${{ matrix.app.name }}"
           # Sanitize branch name for Docker tag (replace / with -)
           BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+          # Branch-prefixed SHA tag for Flux image automation (e.g., main-abc1234)
+          BRANCH_SHA_TAG="${BRANCH_TAG}-${SHA_SHORT}"
           echo "sha_short=${SHA_SHORT}" >> $GITHUB_OUTPUT
           echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "image_url=${{ inputs.registry }}/${IMAGE_NAME}:${SHA_SHORT}" >> $GITHUB_OUTPUT
+          echo "image_url=${{ inputs.registry }}/${IMAGE_NAME}:${BRANCH_SHA_TAG}" >> $GITHUB_OUTPUT
           echo "branch_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
+          echo "branch_sha_tag=${BRANCH_SHA_TAG}" >> $GITHUB_OUTPUT
 
       - name: Determine Dockerfile
         id: dockerfile
@@ -202,7 +205,7 @@ jobs:
           file: ${{ steps.dockerfile.outputs.path }}
           push: true
           tags: |
-            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.sha_short }}
+            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.branch_sha_tag }}
             ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || steps.meta.outputs.branch_tag }}
           build-args: ${{ steps.build_args.outputs.args }}
           cache-from: type=gha,scope=${{ matrix.app.name }}
@@ -228,11 +231,13 @@ jobs:
         id: collect
         run: |
           SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
+          BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+          BRANCH_SHA_TAG="${BRANCH_TAG}-${SHA_SHORT}"
           APPS='${{ needs.detect.outputs.matrix }}'
           IMAGES="{}"
 
           for app in $(echo "$APPS" | jq -r '.app[].name'); do
-            IMAGE_URL="${{ inputs.registry }}/${{ inputs.image_prefix }}/${app}:${SHA_SHORT}"
+            IMAGE_URL="${{ inputs.registry }}/${{ inputs.image_prefix }}/${app}:${BRANCH_SHA_TAG}"
             IMAGES=$(echo "$IMAGES" | jq -c --arg name "$app" --arg url "$IMAGE_URL" '. + {($name): $url}')
           done
 
