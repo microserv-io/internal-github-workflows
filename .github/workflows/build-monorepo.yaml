@@ -20,6 +20,10 @@ on:
         required: false
         type: boolean
         default: false
+      image_tag:
+        description: 'Custom image tag (overrides default branch-sha pattern)'
+        required: false
+        type: string
     secrets:
       GCP_WORKLOAD_IDENTITY_PROVIDER:
         description: 'GCP Workload Identity Provider'
@@ -151,15 +155,20 @@ jobs:
         run: |
           SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
           IMAGE_NAME="${{ inputs.image_prefix }}/${{ matrix.app.name }}"
-          # Sanitize branch name for Docker tag (replace / with -)
           BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-          # Branch-prefixed SHA tag for Flux image automation (e.g., main-abc1234)
-          BRANCH_SHA_TAG="${BRANCH_TAG}-${SHA_SHORT}"
+
+          # Use custom tag if provided (for releases), otherwise use branch-sha pattern
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            FLUX_TAG="${{ inputs.image_tag }}"
+          else
+            FLUX_TAG="${BRANCH_TAG}-${SHA_SHORT}"
+          fi
+
           echo "sha_short=${SHA_SHORT}" >> $GITHUB_OUTPUT
           echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "image_url=${{ inputs.registry }}/${IMAGE_NAME}:${BRANCH_SHA_TAG}" >> $GITHUB_OUTPUT
+          echo "image_url=${{ inputs.registry }}/${IMAGE_NAME}:${FLUX_TAG}" >> $GITHUB_OUTPUT
           echo "branch_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
-          echo "branch_sha_tag=${BRANCH_SHA_TAG}" >> $GITHUB_OUTPUT
+          echo "flux_tag=${FLUX_TAG}" >> $GITHUB_OUTPUT
 
       - name: Determine Dockerfile
         id: dockerfile
@@ -205,7 +214,7 @@ jobs:
           file: ${{ steps.dockerfile.outputs.path }}
           push: true
           tags: |
-            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.branch_sha_tag }}
+            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.flux_tag }}
             ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || steps.meta.outputs.branch_tag }}
           build-args: ${{ steps.build_args.outputs.args }}
           cache-from: type=gha,scope=${{ matrix.app.name }}
@@ -232,12 +241,19 @@ jobs:
         run: |
           SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
           BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-          BRANCH_SHA_TAG="${BRANCH_TAG}-${SHA_SHORT}"
+
+          # Use custom tag if provided, otherwise use branch-sha pattern
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            FLUX_TAG="${{ inputs.image_tag }}"
+          else
+            FLUX_TAG="${BRANCH_TAG}-${SHA_SHORT}"
+          fi
+
           APPS='${{ needs.detect.outputs.matrix }}'
           IMAGES="{}"
 
           for app in $(echo "$APPS" | jq -r '.app[].name'); do
-            IMAGE_URL="${{ inputs.registry }}/${{ inputs.image_prefix }}/${app}:${BRANCH_SHA_TAG}"
+            IMAGE_URL="${{ inputs.registry }}/${{ inputs.image_prefix }}/${app}:${FLUX_TAG}"
             IMAGES=$(echo "$IMAGES" | jq -c --arg name "$app" --arg url "$IMAGE_URL" '. + {($name): $url}')
           done
 
