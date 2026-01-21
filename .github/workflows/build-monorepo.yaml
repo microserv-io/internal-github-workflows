@@ -156,12 +156,13 @@ jobs:
           SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
           IMAGE_NAME="${{ inputs.image_prefix }}/${{ matrix.app.name }}"
           BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+          TIMESTAMP=$(date +%s)
 
-          # Use custom tag if provided (for releases), otherwise use branch-sha pattern
+          # Use custom tag if provided (for releases), otherwise use branch-timestamp pattern
           if [ -n "${{ inputs.image_tag }}" ]; then
             FLUX_TAG="${{ inputs.image_tag }}"
           else
-            FLUX_TAG="${BRANCH_TAG}-${SHA_SHORT}"
+            FLUX_TAG="${BRANCH_TAG}-${TIMESTAMP}"
           fi
 
           echo "sha_short=${SHA_SHORT}" >> $GITHUB_OUTPUT
@@ -241,12 +242,13 @@ jobs:
         run: |
           SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
           BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
+          TIMESTAMP=$(date +%s)
 
-          # Use custom tag if provided, otherwise use branch-sha pattern
+          # Use custom tag if provided, otherwise use branch-timestamp pattern
           if [ -n "${{ inputs.image_tag }}" ]; then
             FLUX_TAG="${{ inputs.image_tag }}"
           else
-            FLUX_TAG="${BRANCH_TAG}-${SHA_SHORT}"
+            FLUX_TAG="${BRANCH_TAG}-${TIMESTAMP}"
           fi
 
           APPS='${{ needs.detect.outputs.matrix }}'
