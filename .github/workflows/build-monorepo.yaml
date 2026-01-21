@@ -21,7 +21,7 @@ on:
         type: boolean
         default: false
       image_tag:
-        description: 'Custom image tag (overrides default branch-sha pattern)'
+        description: 'Custom image tag (overrides default semver pre-release pattern)'
         required: false
         type: string
     secrets:
@@ -50,8 +50,103 @@ on:
       built_images:
         description: 'JSON object of built images {app_name: image_url}'
         value: ${{ jobs.summary.outputs.built_images }}
+      image_tag:
+        description: 'The image tag used (semver pre-release format)'
+        value: ${{ jobs.version.outputs.image_tag }}
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
+      next_version: ${{ steps.version.outputs.next_version }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine next version
+        id: version
+        run: |
+          # Try to get current version from various sources
+          if [ -f ".release-please-manifest.json" ]; then
+            CURRENT_VERSION=$(jq -r '.["."]' .release-please-manifest.json 2>/dev/null || echo "0.0.0")
+          elif [ -f "package.json" ]; then
+            CURRENT_VERSION=$(jq -r '.version // "0.0.0"' package.json)
+          elif [ -f "VERSION" ]; then
+            CURRENT_VERSION=$(cat VERSION | tr -d '\n')
+          else
+            CURRENT_VERSION="0.0.0"
+          fi
+
+          # Clean version (remove 'v' prefix if present)
+          CURRENT_VERSION="${CURRENT_VERSION#v}"
+          echo "Current version: $CURRENT_VERSION"
+
+          # Get commits since last tag to analyze for version bump
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          if [ -n "$LAST_TAG" ]; then
+            COMMITS=$(git log $LAST_TAG..HEAD --format="%s" 2>/dev/null || git log --format="%s" -50)
+          else
+            COMMITS=$(git log --format="%s" -50)
+          fi
+
+          # Determine version bump based on conventional commits
+          BUMP="patch"
+
+          if echo "$COMMITS" | grep -qE "^[a-z]+(\(.+\))?!:|BREAKING CHANGE:"; then
+            BUMP="major"
+          elif echo "$COMMITS" | grep -qE "^feat(\(.+\))?:"; then
+            BUMP="minor"
+          fi
+
+          # Calculate next version
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          case "$BUMP" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+          echo "Next version: $NEXT_VERSION (bump: $BUMP)"
+
+      - name: Generate image tag
+        id: tag
+        run: |
+          # Use custom tag if provided (for releases), otherwise generate semver pre-release
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            IMAGE_TAG="${{ inputs.image_tag }}"
+          else
+            NEXT_VERSION="${{ steps.version.outputs.next_version }}"
+            TIMESTAMP=$(date +%s)
+            SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
+
+            # Format: v0.30.1-1737451200.abc1234
+            # Timestamp first ensures semver sorts chronologically
+            IMAGE_TAG="v${NEXT_VERSION}-${TIMESTAMP}.${SHA_SHORT}"
+          fi
+
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "Image tag: $IMAGE_TAG"
+
   detect:
     runs-on: ubuntu-latest
     outputs:
@@ -118,7 +213,7 @@ jobs:
           echo "Matrix: {\"app\":$FILTERED}"
 
   build:
-    needs: detect
+    needs: [version, detect]
     if: needs.detect.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -153,23 +248,14 @@ jobs:
       - name: Extract metadata
         id: meta
         run: |
-          SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
           IMAGE_NAME="${{ inputs.image_prefix }}/${{ matrix.app.name }}"
+          IMAGE_TAG="${{ needs.version.outputs.image_tag }}"
           BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-          TIMESTAMP=$(date +%s)
 
-          # Use custom tag if provided (for releases), otherwise use branch-timestamp pattern
-          if [ -n "${{ inputs.image_tag }}" ]; then
-            FLUX_TAG="${{ inputs.image_tag }}"
-          else
-            FLUX_TAG="${BRANCH_TAG}-${TIMESTAMP}"
-          fi
-
-          echo "sha_short=${SHA_SHORT}" >> $GITHUB_OUTPUT
           echo "image_name=${IMAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "image_url=${{ inputs.registry }}/${IMAGE_NAME}:${FLUX_TAG}" >> $GITHUB_OUTPUT
+          echo "image_url=${{ inputs.registry }}/${IMAGE_NAME}:${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "branch_tag=${BRANCH_TAG}" >> $GITHUB_OUTPUT
-          echo "flux_tag=${FLUX_TAG}" >> $GITHUB_OUTPUT
 
       - name: Determine Dockerfile
         id: dockerfile
@@ -215,7 +301,7 @@ jobs:
           file: ${{ steps.dockerfile.outputs.path }}
           push: true
           tags: |
-            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.flux_tag }}
+            ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.image_tag }}
             ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || steps.meta.outputs.branch_tag }}
           build-args: ${{ steps.build_args.outputs.args }}
           cache-from: type=gha,scope=${{ matrix.app.name }}
@@ -223,6 +309,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.image_tag }}
             app.name=${{ matrix.app.name }}
 
       - name: Output image info
@@ -230,7 +317,7 @@ jobs:
           echo "Built image: ${{ steps.meta.outputs.image_url }}"
 
   summary:
-    needs: [detect, build]
+    needs: [version, detect, build]
     if: always() && needs.detect.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -240,26 +327,18 @@ jobs:
       - name: Collect built images
         id: collect
         run: |
-          SHA_SHORT=$(echo ${{ github.sha }} | cut -c1-7)
-          BRANCH_TAG=$(echo "${{ github.ref_name }}" | sed 's/\//-/g')
-          TIMESTAMP=$(date +%s)
-
-          # Use custom tag if provided, otherwise use branch-timestamp pattern
-          if [ -n "${{ inputs.image_tag }}" ]; then
-            FLUX_TAG="${{ inputs.image_tag }}"
-          else
-            FLUX_TAG="${BRANCH_TAG}-${TIMESTAMP}"
-          fi
+          IMAGE_TAG="${{ needs.version.outputs.image_tag }}"
 
           APPS='${{ needs.detect.outputs.matrix }}'
           IMAGES="{}"
 
           for app in $(echo "$APPS" | jq -r '.app[].name'); do
-            IMAGE_URL="${{ inputs.registry }}/${{ inputs.image_prefix }}/${app}:${FLUX_TAG}"
+            IMAGE_URL="${{ inputs.registry }}/${{ inputs.image_prefix }}/${app}:${IMAGE_TAG}"
             IMAGES=$(echo "$IMAGES" | jq -c --arg name "$app" --arg url "$IMAGE_URL" '. + {($name): $url}')
           done
 
-          # Use compact JSON for GITHUB_OUTPUT
           echo "images=$(echo "$IMAGES" | jq -c .)" >> $GITHUB_OUTPUT
           echo "Built images:"
           echo "$IMAGES" | jq .
+          echo ""
+          echo "Image tag: $IMAGE_TAG"
