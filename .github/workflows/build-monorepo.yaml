@@ -192,7 +192,7 @@ jobs:
             APP_PATH=$(echo "$app" | base64 -d | jq -r '.path')
 
             if echo "$CHANGED_FILES" | grep -q "^${APP_PATH}/"; then
-              CHANGED_APPS=$(echo "$CHANGED_APPS" | jq --arg name "$APP_NAME" '. + [$name]')
+              CHANGED_APPS=$(echo "$CHANGED_APPS" | jq -c --arg name "$APP_NAME" '. + [$name]')
               echo "App changed: $APP_NAME"
             fi
           done
@@ -200,11 +200,11 @@ jobs:
           # Check for root changes
           if echo "$CHANGED_FILES" | grep -qE "^(package\.json|pnpm-lock\.yaml|bun\.lockb|requirements\.txt|go\.mod|go\.sum|\.dockerignore|charts/)"; then
             echo "Root dependency change detected, building all apps"
-            CHANGED_APPS=$(echo "$APPS_CONFIG" | jq '[.[].name]')
+            CHANGED_APPS=$(echo "$APPS_CONFIG" | jq -c '[.[].name]')
           fi
 
           # Create matrix
-          FILTERED=$(echo "$APPS_CONFIG" | jq --argjson changed "$CHANGED_APPS" '[.[] | select(.name as $n | $changed | index($n))]')
+          FILTERED=$(echo "$APPS_CONFIG" | jq -c --argjson changed "$CHANGED_APPS" '[.[] | select(.name as $n | $changed | index($n))]')
           HAS_CHANGES=$([ "$(echo "$FILTERED" | jq 'length')" -gt 0 ] && echo "true" || echo "false")
 
           echo "matrix={\"app\":$FILTERED}" >> $GITHUB_OUTPUT
