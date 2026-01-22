@@ -269,8 +269,15 @@ jobs:
       - name: Prepare build args
         id: build_args
         run: |
-          # Start with app-specific build args
-          ARGS="${{ matrix.app.build_args }}"
+          IMAGE_TAG="${{ needs.version.outputs.image_tag }}"
+
+          # Start with version arg (available to all builds)
+          ARGS="APP_VERSION=${IMAGE_TAG}"
+
+          # Add app-specific build args
+          if [ -n "${{ matrix.app.build_args }}" ]; then
+            ARGS="${ARGS}"$'\n'"${{ matrix.app.build_args }}"
+          fi
 
           # Add secrets as build args if provided
           if [ -n "${{ secrets.CONTENTFUL_SPACE_ID }}" ]; then
