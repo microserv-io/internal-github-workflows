@@ -36,7 +36,7 @@ on:
 
 jobs:
   version:
-    runs-on: ubuntu-latest
+    runs-on: gke-linux
     outputs:
       new_version: ${{ steps.version.outputs.new_version }}
       old_version: ${{ steps.version.outputs.old_version }}

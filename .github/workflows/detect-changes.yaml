@@ -25,7 +25,7 @@ on:
 
 jobs:
   detect:
-    runs-on: ubuntu-latest
+    runs-on: gke-linux
     outputs:
       changed_apps: ${{ steps.changes.outputs.changed_apps }}
       has_changes: ${{ steps.changes.outputs.has_changes }}
