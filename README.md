@@ -37,7 +37,7 @@ Builds container images for changed apps in a monorepo. Automatically detects wh
 ]
 ```
 
-Both build workflows keep their BuildKit layer cache in the registry as the `buildcache` tag next to each image, so the pushing service account also writes that tag.
+Both build workflows keep their BuildKit layer cache in the registry as the `buildcache` tag next to each image. Every build reads it; only builds of `main` write it, so the pushing service account also writes that tag.
 
 ### build-container.yaml
 
