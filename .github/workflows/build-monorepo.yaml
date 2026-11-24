@@ -311,8 +311,8 @@ jobs:
             ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ steps.meta.outputs.image_tag }}
             ${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || steps.meta.outputs.branch_tag }}
           build-args: ${{ steps.build_args.outputs.args }}
-          cache-from: type=gha,scope=${{ matrix.app.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.app.name }}
+          cache-from: type=registry,ref=${{ inputs.registry }}/${{ steps.meta.outputs.image_name }}:buildcache
+          cache-to: ${{ github.ref_name == 'main' && format('type=registry,ref={0}/{1}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true', inputs.registry, steps.meta.outputs.image_name) || '' }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

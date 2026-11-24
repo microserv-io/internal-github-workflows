@@ -99,8 +99,8 @@ jobs:
             ${{ inputs.registry }}/${{ inputs.image_name }}:${{ steps.meta.outputs.sha_short }}
             ${{ inputs.registry }}/${{ inputs.image_name }}:${{ github.ref_name == 'main' && 'latest' || github.ref_name }}
           build-args: ${{ inputs.build_args }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=${{ inputs.registry }}/${{ inputs.image_name }}:buildcache
+          cache-to: ${{ github.ref_name == 'main' && format('type=registry,ref={0}/{1}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true', inputs.registry, inputs.image_name) || '' }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
